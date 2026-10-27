@@ -1,0 +1,57 @@
+name: Build Android (EAS)
+
+on:
+  # 手动触发：Actions 页面 → 此工作流 → Run workflow
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'EAS build profile'
+        required: true
+        default: 'apk'
+        type: choice
+        options:
+          - apk
+          - production
+  # 推送 tag（如 v1.2.3）时自动构建
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-android:
+    name: Build Android AAB on EAS
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # 云端构建：本地只做认证 + 上传源码，编译在 EAS 服务器完成。
+      # --wait 阻塞到构建完成；--non-interactive 关闭任何交互提示（CI 必需）。
+      - name: EAS build (Android)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: npx eas-cli@16 build -p android --profile ${{ github.event.inputs.profile || 'apk' }} --non-interactive --wait
+
+      # 尽力把产物拉回 GitHub（失败不阻断——构建已在 EAS 完成，可去 EAS 控制台下载）。
+      - name: Download AAB (best-effort)
+        if: success()
+        continue-on-error: true
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: npx eas-cli@16 build:download --platform android --path ./substreamer.aab
+
+      - name: Upload AAB artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: substreamer-android
+          path: ./substreamer.aab
+          if-no-files-found: ignore

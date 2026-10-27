@@ -1,0 +1,62 @@
+name: Build Android APK (local, no EAS)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-apk:
+    name: Build debug APK on GitHub runner
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      # Expo SDK 57 / RN 0.86 需要 JDK 17
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # 本地生成原生 Android 工程（不需要 Expo 账号）
+      - name: Generate native Android project
+        run: npx expo prebuild --platform android --clean
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 读 Expo 生成的版本号，装正好 gradle 期望的 NDK / SDK / build-tools
+      - name: Install required SDK packages
+        run: |
+          NDK=$(grep -E '^ndkVersion' android/gradle.properties | sed 's/.*=//' | tr -d ' ')
+          COMPILE_SDK=$(grep -oE 'compileSdk\s*=\s*[0-9]+' android/app/build.gradle | grep -oE '[0-9]+' | head -1)
+          echo "NDK=${NDK}  COMPILE_SDK=${COMPILE_SDK:-35}"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-${COMPILE_SDK:-35}" "build-tools;35.0.0" ${NDK:+"ndk;${NDK}"}
+
+      - name: Build debug APK
+        env:
+          GRADLE_OPTS: "-Xmx2048m -XX:MaxMetaspaceSize=512m"
+        run: |
+          cd android
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: substreamer-android-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
