@@ -1,7 +1,9 @@
 name: Build Android (EAS)
 
 on:
-  # 手动触发：Actions 页面 → 此工作流 → Run workflow
+  # 仅手动触发：需要仓库 Secret `EXPO_TOKEN`（Expo 账号）。
+  # 刻意不监听 `v*` tag —— 发版打 tag 时不应因为缺少该 Secret 而产生固定失败。
+  # 免密钥的本地 APK 构建见 build-android-local.yml。
   workflow_dispatch:
     inputs:
       profile:
@@ -12,10 +14,6 @@ on:
         options:
           - apk
           - production
-  # 推送 tag（如 v1.2.3）时自动构建
-  push:
-    tags:
-      - 'v*'
 
 jobs:
   build-android:

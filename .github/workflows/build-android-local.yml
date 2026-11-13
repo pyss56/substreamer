@@ -34,17 +34,40 @@ jobs:
       - name: Generate native Android project
         run: npx expo prebuild --platform android --clean
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # ubuntu-latest 已预装 Android SDK。不要用 android-actions/setup-android@v3：
+      # 它会尝试安装已被 Google 移除的 `tools` 包，sdkmanager 报
+      # "Failed to find package 'tools'" 并以 exit 1 让整个 action 失败。
+      - name: Locate runner Android SDK
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -maxdepth 3 -type f -name sdkmanager -print -quit)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found under $SDK_ROOT/cmdline-tools" >&2
+            exit 1
+          fi
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          "$SDKMANAGER" --version
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
 
-      # 读 Expo 生成的版本号，装正好 gradle 期望的 NDK / SDK / build-tools
+      # 读 Expo prebuild 生成的 android/build.gradle ext 块，装 gradle 期望的
+      # compileSdk / build-tools / NDK（sed + `sed -n 1p`，避免 pipefail 下的 SIGPIPE）。
       - name: Install required SDK packages
         run: |
-          NDK=$(grep -E '^ndkVersion' android/gradle.properties | sed 's/.*=//' | tr -d ' ')
-          COMPILE_SDK=$(grep -oE 'compileSdk\s*=\s*[0-9]+' android/app/build.gradle | grep -oE '[0-9]+' | head -1)
-          echo "NDK=${NDK}  COMPILE_SDK=${COMPILE_SDK:-35}"
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-${COMPILE_SDK:-35}" "build-tools;35.0.0" ${NDK:+"ndk;${NDK}"}
+          EXT=android/build.gradle
+          COMPILE_SDK=$(sed -nE 's/.*compileSdkVersion[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' "$EXT" | sed -n '1p')
+          BUILD_TOOLS=$(sed -nE 's/.*buildToolsVersion[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$EXT" | sed -n '1p')
+          NDK=$(sed -nE 's/.*ndkVersion[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$EXT" | sed -n '1p')
+          if [ -z "$NDK" ]; then
+            NDK=$(sed -nE 's/^ndkVersion[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' android/gradle.properties | sed -n '1p')
+          fi
+          COMPILE_SDK=${COMPILE_SDK:-35}
+          BUILD_TOOLS=${BUILD_TOOLS:-35.0.0}
+          echo "compileSdk=$COMPILE_SDK  buildTools=$BUILD_TOOLS  ndk=${NDK:-<none>}"
+          PKGS=("platform-tools" "platforms;android-$COMPILE_SDK" "build-tools;$BUILD_TOOLS")
+          if [ -n "$NDK" ]; then PKGS+=("ndk;$NDK"); fi
+          "$SDKMANAGER" "${PKGS[@]}"
 
       - name: Build debug APK
         env:
