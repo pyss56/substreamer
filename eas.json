@@ -17,6 +17,16 @@
         "image": "latest",
         "buildType": "app-bundle"
       }
+    },
+    "apk": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_USE_PRECOMPILED_MODULES": "0"
+      },
+      "android": {
+        "image": "latest",
+        "buildType": "apk"
+      }
     }
   },
   "submit": {
