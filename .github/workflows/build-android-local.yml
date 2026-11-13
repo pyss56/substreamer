@@ -2,6 +2,19 @@ name: Build Android APK (local, no EAS)
 
 on:
   workflow_dispatch:
+    inputs:
+      variant:
+        description: 'App identity'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          # Distinct applicationId: installs alongside the Play/EAS release,
+          # no uninstall, no data loss.
+          - dev
+          # Same applicationId as the release: only for devices without the
+          # official app installed (it REPLACES it).
+          - original
   push:
     tags:
       - 'v*'
@@ -12,6 +25,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # A `v*` tag is a release event, so it keeps the ORIGINAL application id.
+      # Manual runs default to `dev` (the coexist-safely-with-the-store-app build).
+      APK_VARIANT: ${{ inputs.variant || (github.event_name == 'push' && 'original') || 'dev' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -30,9 +47,33 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # 本地生成原生 Android 工程（不需要 Expo 账号）
+      # 本地生成原生 Android 工程（不需要 Expo 账号）。dev 变体通过
+      # app.config.js 覆盖 applicationId，使自构建 APK 可与官方版共存。
       - name: Generate native Android project
-        run: npx expo prebuild --platform android --clean
+        run: |
+          if [ "$APK_VARIANT" = "original" ]; then
+            unset SUBSTREAMER_ANDROID_PACKAGE
+          else
+            export SUBSTREAMER_ANDROID_PACKAGE=com.ghenry22.substream2.dev
+          fi
+          npx expo prebuild --platform android --clean
+
+      # Fail fast if the env override silently did not take effect — otherwise
+      # a "dev" run could ship the ORIGINAL application id and look fine.
+      # Fixed-string grep (not a regex): `com.ghenry22.substream2` is a prefix
+      # of `com.ghenry22.substream2.dev` and would otherwise match both.
+      - name: Verify app identity
+        run: |
+          if [ "$APK_VARIANT" = "dev" ]; then EXPECTED=com.ghenry22.substream2.dev; else EXPECTED=com.ghenry22.substream2; fi
+          echo "variant=$APK_VARIANT  expected applicationId=$EXPECTED"
+          grep -E '^[[:space:]]*applicationId' android/app/build.gradle || true
+          if grep -qF "applicationId '$EXPECTED'" android/app/build.gradle ||
+             grep -qF "applicationId \"$EXPECTED\"" android/app/build.gradle; then
+            echo "applicationId OK"
+          else
+            echo "Expected applicationId '$EXPECTED' — env override did not apply" >&2
+            exit 1
+          fi
 
       # ubuntu-latest 已预装 Android SDK。不要用 android-actions/setup-android@v3：
       # 它会尝试安装已被 Google 移除的 `tools` 包，sdkmanager 报
@@ -50,6 +91,14 @@ jobs:
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
           "$SDKMANAGER" --version
           yes | "$SDKMANAGER" --licenses > /dev/null || true
+
+      # Cache the Gradle user home + dependency/build caches. Placed AFTER
+      # prebuild so android/gradle/wrapper exists and the cache key can include
+      # the wrapper version. First run compiles all four ABIs (~25 min); later
+      # runs reuse the compiled outputs.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          dependency-graph: disabled
 
       # 读 Expo prebuild 生成的 android/build.gradle ext 块，装 gradle 期望的
       # compileSdk / build-tools / NDK（sed + `sed -n 1p`，避免 pipefail 下的 SIGPIPE）。
@@ -80,6 +129,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: substreamer-android-debug
+          name: substreamer-android-${{ env.APK_VARIANT }}-debug
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
